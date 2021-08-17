@@ -115,10 +115,20 @@ class SubscriptionResponder(object):
 
     def debug(self, msg, *args, **kwargs):
         args = list(args)
+        args.insert(0, msg)
+        output_str = " ".join(map(lambda x: x if isinstance(x, str) else repr(x), args))
+        # print("METASUB-DEBUG: " + output_str, file=sys.stderr)
         if self.is_debug and self.body_writer:
-            args.insert(0, msg)
-            self.body_writer.write("DEBUG: " + " ".join(map(lambda x: x if isinstance(x, str) else repr(x), args)) + "\n")
-        
+            self.body_writer.write("DEBUG: " + output_str + "\n")
+    
+    def error(self, msg, *args, **kwargs):
+        args = list(args)
+        args.insert(0, msg)
+        output_str = " ".join(map(lambda x: x if isinstance(x, str) else repr(x), args))
+        print("METASUB-ERROR: " + output_str, file=sys.stderr)
+        if self.body_writer:
+            self.body_writer.write('#$%*"@#$% ERROR: ' + output_str + "\n")
+
     async def get_metasub(self):
         if self.metasub_location_type == "URL":
             async with aiohttp.ClientSession(connector=config.create_connector_for_metasub(self.metasub_location), timeout=aiohttp.ClientTimeout(total=config.METASUB_TIMEOUT_TOTAL_SEC)) as session:
@@ -168,6 +178,28 @@ class SubscriptionResponder(object):
             }
             for ss in ssd_obj["servers"]:
                 ss_obj = {**common_ss_obj, **{"add": ss["server"], "ps": ss["remarks"]}}
+                if "port" in ss:
+                    ss_obj["port"] = ss["port"]
+                if "password" in ss:
+                    ss_obj["password"] = ss["password"]
+                if "encryption" in ss:
+                    ss_obj["enc"] = ss["encryption"]
+                if "plugin" in ss and "plugin_options" in ss:
+                    ss_plugin_parts = ss["plugin_options"].split(";")
+                    ss_plugin_parse_result = {}
+                    for part in ss_plugin_parts:
+                        part_kv = part.split("=")
+                        if len(part_kv) != 2:
+                            continue
+                        
+                        k, v = part_kv
+                        if k == "obfs":
+                            ss_plugin_parse_result["mode"] = v
+                        elif k == "obfs-host":
+                            ss_plugin_parse_result["host"] = v
+                    if ss_plugin_parse_result:
+                        ss_obj["plugin"] = "obfs"
+                        ss_obj["plugin-opts"] = ss_plugin_parse_result
                 self.debug("Adding proxy: " + json.dumps(ss_obj, ensure_ascii=False))
                 proxies.append(ss_obj)
         else:
@@ -204,6 +236,38 @@ class SubscriptionResponder(object):
                     ss_add, ss_port = split_by_at[1].split(":")
 
                     ss_port = ''.join(itertools.takewhile(str.isdigit, ss_port))
+                    
+                    # obfs plugin
+                    
+                    ss_body_query_parts = ss_body.split("?")
+                    ss_plugin_parse_result = {}
+
+                    if len(ss_body_query_parts) >= 2:
+                        ss_body_query_str = '?'.join(ss_body_query_parts[1:])
+                        ss_body_query = dict(urllib.parse.parse_qsl(ss_body_query_str))
+                        ss_plugin = ss_body_query.get("plugin", "")
+                        
+                        if ss_plugin != "":
+                            ss_plugin_parts = ss_plugin.split(";")
+                            for part in ss_plugin_parts:
+                                part_kv = part.split("=")
+                                if len(part_kv) <= 0:
+                                    continue
+                                elif len(part_kv) == 1:
+                                    if part_kv[0] != "obfs-local":
+                                        ss_plugin_parse_result = {}
+                                        break
+                                    else:
+                                        continue
+                                elif len(part_kv) > 2:
+                                    continue
+                                
+                                k, v = part_kv
+                                if k == "obfs":
+                                    ss_plugin_parse_result["mode"] = v
+                                elif k == "obfs-host":
+                                    ss_plugin_parse_result["host"] = v
+                        
 
                     ss_obj = {
                         "is_ss": True,
@@ -213,6 +277,10 @@ class SubscriptionResponder(object):
                         "password": ss_password,
                         "ps": ss_ps
                     }
+                    
+                    if ss_plugin_parse_result:
+                        ss_obj["plugin"] = "obfs"
+                        ss_obj["plugin-opts"] = ss_plugin_parse_result
 
                     if self.is_debug:
                         ss_obj.update({"origin": proxy})
@@ -247,12 +315,16 @@ class SubscriptionResponder(object):
         if self.is_grouping_enabled:
             raw_proxies = [{
                 **proxy,
-                **{"group": self.entries[i].get("subscribe_url", "//No group").split("/")[2]}
+                **{"group": self.entries[i].get("subscribe_url", "//No group").split("/")[2]},
+                **{"mux": True},
+                **{"muxConcurrency": 16},
             } for i, group in enumerate(raw_proxies_grouped) for proxy in group]
         else:
             raw_proxies = [{
                 **proxy,
-                **{"group": "No group"}
+                **{"group": "No group"},
+                **{"mux": True},
+                **{"muxConcurrency": 16},
             } for i, group in enumerate(raw_proxies_grouped) for proxy in group]
 
         return raw_proxies
@@ -267,13 +339,24 @@ class SubscriptionResponder(object):
                     clash_proxy["name"] = proxy["ps"]
                     clash_proxy["type"] = "ss"
                     clash_proxy["server"] = proxy["add"]
-                    clash_proxy["port"] = str(proxy["port"])
+                    clash_proxy["port"] = int(proxy["port"])
                     clash_proxy["cipher"] = proxy["enc"]
                     clash_proxy["password"] = proxy["password"]
                     clash_proxy["udp"] = True
                     if "plugin" in proxy:
                         clash_proxy["plugin"] = proxy["plugin"]
-                        clash_proxy["plugin-opts"] = proxy["plugin-opts"]
+                        clash_proxy["plugin-opts"] = proxy.get("plugin-opts", proxy.get("plugin_opts", {}))
+                elif proxy.get("is_http", False) == True:
+                    clash_proxy["name"] = proxy["ps"]
+                    clash_proxy["type"] = "http"
+                    clash_proxy["server"] = proxy["add"]
+                    clash_proxy["port"] = int(proxy["port"])
+                elif proxy.get("is_socks5", False) == True:
+                    clash_proxy["name"] = proxy["ps"]
+                    clash_proxy["type"] = "socks5"
+                    clash_proxy["server"] = proxy["add"]
+                    clash_proxy["port"] = int(proxy["port"])
+                    clash_proxy["udp"] = True
                 else:
                     # kcp not supported
                     if proxy['net'] == "kcp":
@@ -282,19 +365,21 @@ class SubscriptionResponder(object):
                     clash_proxy["name"] = proxy["ps"]
                     clash_proxy["type"] = "vmess"
                     clash_proxy["server"] = proxy["add"]
-                    clash_proxy["port"] = str(proxy["port"])
+                    clash_proxy["port"] = int(proxy["port"])
                     clash_proxy["uuid"] = str(proxy["id"])
                     clash_proxy["alterId"] = proxy["aid"]
                     clash_proxy["cipher"] = "auto"
                     clash_proxy["udp"] = True
-                    clash_proxy["tls"] = proxy["tls"] == "tls"
+                    clash_proxy["tls"] = proxy.get("tls", "") == "tls"
                     clash_proxy["skip-cert-verify"] = False
                     if proxy["net"] != "tcp":
                         clash_proxy["network"] = proxy['net']
                     elif proxy['type'] == "http":
                         clash_proxy["network"] = "http"
-                    clash_proxy["ws-path"] = proxy['path']
-                    clash_proxy["ws-headers"] = {"Host": proxy['host']}
+                        if "ws-path" in clash_proxy:
+                            clash_proxy["network"] = "ws"
+                    clash_proxy["ws-path"] = proxy.get('path', "")
+                    clash_proxy["ws-headers"] = {"Host": proxy.get('host', "")}
 
                 clash_result["proxies"].append(clash_proxy)
 
@@ -333,6 +418,11 @@ class SubscriptionResponder(object):
                 if proxy.get("is_ss", False) == True:
                     all_uris += self.make_ssr_uri(proxy)
                     all_uris += "\n"
+                elif proxy.get("is_http", False) == True:
+                    # TODO
+                    pass
+                elif proxy.get("is_socks5", False) == True:
+                    pass
             elif isinstance(proxy, str):
                 all_uris += proxy
                 all_uris += "\n"
@@ -351,6 +441,11 @@ class SubscriptionResponder(object):
                         all_uris += self.base64_encode("%(enc)s:%(password)s" % proxy)
                         all_uris += "@%(add)s:%(port)s" % proxy
                     all_uris += "#" + urllib.parse.quote(proxy['ps'])
+                elif proxy.get("is_http", False) == True:
+                    # TODO
+                    pass
+                elif proxy.get("is_socks5", False) == True:
+                    pass
                 else:
                     all_uris += "vmess://"
                     all_uris += self.base64_encode(json.dumps(proxy, ensure_ascii=False))
@@ -381,7 +476,8 @@ class SubscriptionResponder(object):
             self.body_writer = None
         except Exception:
             # self.debug(f"Error occurred: {repr(ex)}")
-            self.debug(f"Error occurred: {traceback.format_exc()}")
+            error_str = f"Error occurred: {traceback.format_exc()}"
+            self.error(error_str)
             self.body_writer.end()
 
 

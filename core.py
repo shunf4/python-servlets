@@ -9,6 +9,7 @@ import importlib
 import importlib.util
 import types
 import config
+from werkzeug.routing import Rule
 
 app = Quart("python-servlets")
 
@@ -22,11 +23,13 @@ async def main():
     return "Visit /f/<function name>, like /f/myip"
 
 def validate_function_name(function_name: str) -> None:
-    if re.fullmatch(r'^[A-Za-z0-9_]+$', function_name) is None:
-        raise ValueError(f"Function name should be ^[A-Za-z0-9_]+$, got {function_name}")
+    if re.fullmatch(r'^[.A-Za-z0-9_]+$', function_name) is None:
+        raise ValueError(f"Function name should be ^[.A-Za-z0-9_]+$, got {function_name}")
 
-@app.route("/f/<string:function_name>")
+app.url_map.add(Rule('/f/<string:function_name>', endpoint='f'))
+@app.endpoint('f')
 async def execute_function(function_name: str):
+    function_name = function_name.replace(".", "_")
     validate_function_name(function_name)
 
     function_path = os.path.join(PROJECT_PATH, function_name)

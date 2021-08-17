@@ -2,3 +2,7 @@
 **/__pycache__/
 **/config.py
 metasub/sub.txt
+mypac/pac.txt
+deploy.sh
+deploy/
+VENV

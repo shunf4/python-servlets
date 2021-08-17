@@ -1,0 +1,2 @@
+GLOBAL_REGISTER = {}
+
