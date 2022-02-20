@@ -111,6 +111,12 @@ class SubscriptionResponder(object):
         if self.out_type not in ["v2", "v2ss", "clash", "json", "ssr", "v2sip"]:
             raise ValueError(f"out_type({self.out_type}) not in [v2, v2ss, clash, json, ssr, v2sip]")
 
+        self.is_clashray = is_flag_value_enabled(self.query_dict.get("clashray", ["0"])[0])
+        self.in_external_scope = list(map(lambda x: x.strip(), self.query_dict.get("inextscope", [""])[0].split(",")))
+        self.in_lan_scope = list(map(lambda x: x.strip(), self.query_dict.get("inlanscope", [""])[0].split(",")))
+        self.in_self_scope = list(map(lambda x: x.strip(), self.query_dict.get("inselfscope", [""])[0].split(",")))
+        self.in_none_scope = list(map(lambda x: x.strip(), self.query_dict.get("innonescope", [""])[0].split(",")))
+
         self.body_writer: SubscriptionResponder.ResponseBodyIterable = None
 
     def debug(self, msg, *args, **kwargs):
@@ -389,6 +395,58 @@ class SubscriptionResponder(object):
                     if "Node Sel" in group["name"]:
                         group["proxies"].append(clash_proxy["name"])
                 
+        if self.is_clashray:
+            zones = clash_result.get("clashray-net-zones", {})
+            clashray_proxies = []
+            clashray_domain_rules = []
+            clashray_ip_cidr_rules = []
+            for zname, z in zones.items():
+                scope = "external-scope-proxy"
+
+                if zname in self.in_none_scope:
+                    continue
+                if zname in self.in_lan_scope:
+                    scope = "lan-scope-proxy"
+                if zname in self.in_self_scope:
+                    scope = "self-scope-proxy"
+
+                zproxy = z[scope]
+                zhosts = z["hosts"]
+
+                clashray_proxies.append(copy.deepcopy(zproxy))
+                for zhost in zhosts:
+                    if zhost["type"] == "DOMAIN-SUFFIX":
+                        clashray_domain_rules.append(zhost["type"] + "," + zhost["value"] + "," + zproxy["name"])
+                    if zhost["type"] == "IP-CIDR":
+                        clashray_ip_cidr_rules.append(zhost["type"] + "," + zhost["value"] + "," + zproxy["name"])
+
+            proxy_insert_index = -1
+            for i, p in enumerate(clash_result["proxies"]):
+                if p["name"] == "INSERT-CLASHRAY-PROXIES-HERE":
+                    proxy_insert_index = i
+                    break
+
+            if proxy_insert_index >= 0:
+                clash_result["proxies"][(proxy_insert_index+1):(proxy_insert_index+1)] = clashray_proxies
+
+            domain_rule_insert_index = -1
+            ip_cidr_rule_insert_index = -1
+            for i, r in enumerate(clash_result["rules"]):
+                if "INSERT-CLASHRAY-DOMAIN-RULES-HERE" in r:
+                    domain_rule_insert_index = i
+                    break
+
+            if domain_rule_insert_index >= 0:
+                clash_result["rules"][(domain_rule_insert_index+1):(domain_rule_insert_index+1)] = clashray_domain_rules
+
+            for i, r in enumerate(clash_result["rules"]):
+                if "INSERT-CLASHRAY-IP-CIDR-RULES-HERE" in r:
+                    ip_cidr_rule_insert_index = i
+                    break
+
+            if ip_cidr_rule_insert_index >= 0:
+                clash_result["rules"][(ip_cidr_rule_insert_index+1):(ip_cidr_rule_insert_index+1)] = clashray_ip_cidr_rules
+
         return yaml.safe_dump(clash_result, allow_unicode=True)
 
     def make_ssr_uri(self, proxy):
