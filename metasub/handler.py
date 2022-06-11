@@ -133,7 +133,7 @@ class SubscriptionResponder(object):
         output_str = " ".join(map(lambda x: x if isinstance(x, str) else repr(x), args))
         print("METASUB-ERROR: " + output_str, file=sys.stderr)
         if self.body_writer:
-            self.body_writer.write('#$%*"@#$% ERROR: ' + output_str + "\n")
+            self.body_writer.write('$%*"@#$% ERROR: ' + output_str + "\n")
 
     async def get_metasub(self):
         if self.metasub_location_type == "URL":
