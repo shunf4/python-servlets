@@ -408,7 +408,7 @@ class SubscriptionResponder(object):
                     if "plugin" in proxy:
                         clash_proxy["plugin"] = proxy["plugin"]
                         clash_proxy["plugin-opts"] = proxy.get("plugin-opts", proxy.get("plugin_opts", {}))
-                if proxy.get("is_ssr", False) == True:
+                elif proxy.get("is_ssr", False) == True:
                     clash_proxy["name"] = proxy["ps"]
                     clash_proxy["type"] = "ssr"
                     clash_proxy["server"] = proxy["add"]
