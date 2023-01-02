@@ -165,7 +165,7 @@ class SubscriptionResponder(object):
         self.clash_base = metasub.get("clash-base", self.clash_base)
         self.entries = metasub.get("entries")
 
-    async def get_proxies_from_sub_url(self, url, filter, exclude_filter, allow_ss):
+    async def get_proxies_from_sub_url(self, url, filter, exclude_filter, allow_ss, allow_ssr):
         result = []
         async with aiohttp.ClientSession(connector=config.create_connector_for_sub(url), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC)) as session:
             self.debug(f"Getting sub from", url)
@@ -224,6 +224,7 @@ class SubscriptionResponder(object):
                 if filter_regex.fullmatch(proxy['ps']) and not exclude_regex.fullmatch(proxy['ps']):
                     result.append(proxy)
             elif proxy.startswith("ss://") and allow_ss:
+                # ss://cmM0LW1kNTpwYXNzd2Q=@192.168.100.1:8888/?plugin=obfs-local%3Bobfs%3Dhttp#Example2
                 split_by_hash = proxy[len("ss://"):].split('#')
                 ps = urllib.parse.unquote(split_by_hash[-1])
                 if len(split_by_hash) < 2 or filter_regex.fullmatch(ps) and not exclude_regex.fullmatch(ps):
@@ -293,6 +294,59 @@ class SubscriptionResponder(object):
                         self.debug(f"Added SS proxy: {repr(ss_obj)}")
                     
                     result.append(ss_obj)
+            elif proxy.startswith("ssr://") and allow_ssr:
+                # ssr://base64(host:port:protocol:method:obfs:base64pass/?obfsparam=base64param&protoparam=base64param&remarks=base64remarks&group=base64group&udpport=0&uot=0)
+                # https://github.com/HMBSbige/ShadowsocksR-Windows/wiki/SSR-QRcode-scheme
+                proxy = proxy[len("ssr://"):]
+                proxy = self.base64_decode(proxy)
+                split_by_slash = proxy.split('/?')
+                ssr_basic_info = split_by_slash[0]
+                ssr_extra_param_str = ""
+                ssr_ps = "SSRServer"
+                if len(split_by_slash) > 1:
+                    ssr_extra_param_str = "/?".join(split_by_slash[1:])
+
+                [
+                    ssr_host,
+                    ssr_port,
+                    ssr_protocol,
+                    ssr_method,
+                    ssr_obfs,
+                    ssr_base64pass
+                ] = ssr_basic_info.split(":")
+                ssr_pass = self.base64_decode(ssr_base64pass)
+
+                ssr_extra_param = dict(urllib.parse.parse_qsl(ssr_extra_param_str))
+                ssr_extra_param_result = {}
+
+                for k, v in ssr_extra_param.items():
+                    if k == "obfsparam":
+                        ssr_extra_param_result["obfs-param"] = self.base64_decode(v)
+                    elif k == "protoparam":
+                        ssr_extra_param_result["protocol-param"] = self.base64_decode(v)
+                    elif k == "remarks":
+                        ssr_ps = self.base64_decode(v)
+
+                ssr_obj = {
+                    "is_ssr": True,
+                    "add": ssr_host,
+                    "port": ssr_port,
+                    "enc": ssr_method,
+                    "password": ssr_pass,
+                    "ps": ssr_ps,
+                    "obfs": ssr_obfs,
+                    "protocol": ssr_protocol,
+                    **ssr_extra_param_result
+                }
+
+                if self.is_debug:
+                    ssr_obj.update({"origin": proxy})
+                    self.debug(f"Added SSR proxy: {repr(ssr_obj)}")
+                
+                result.append(ssr_obj)
+            else:
+                if self.is_debug:
+                    self.debug(f"Unrecognized proxy: {repr(proxy)}")
         return result
 
     async def get_proxies_as_is(self, entry):
@@ -301,6 +355,7 @@ class SubscriptionResponder(object):
     async def fetch_raw_proxies(self) -> List[Dict]:
         tasks: List[asyncio.Future] = []
         allow_ss: bool = self.out_type in ["v2ss", "clash", "json", "ssr", "v2sip"]
+        allow_ssr: bool = self.out_type in ["clash", "json", "ssr"]
         for entry in self.entries:
             if not isinstance(entry, dict):
                 raise TypeError(f"{repr(entry)} is not a dict: {type(entry).__name__}")
@@ -310,7 +365,8 @@ class SubscriptionResponder(object):
                     subscribe_url,
                     entry.get("filter", r'^.*$'),
                     entry.get("exclude_filter", r'^$'),
-                    allow_ss
+                    allow_ss,
+                    allow_ssr
                 ))
             else:
                 tasks.append(self.get_proxies_as_is(entry))
@@ -352,6 +408,20 @@ class SubscriptionResponder(object):
                     if "plugin" in proxy:
                         clash_proxy["plugin"] = proxy["plugin"]
                         clash_proxy["plugin-opts"] = proxy.get("plugin-opts", proxy.get("plugin_opts", {}))
+                if proxy.get("is_ssr", False) == True:
+                    clash_proxy["name"] = proxy["ps"]
+                    clash_proxy["type"] = "ssr"
+                    clash_proxy["server"] = proxy["add"]
+                    clash_proxy["port"] = int(proxy["port"])
+                    clash_proxy["cipher"] = proxy["enc"]
+                    clash_proxy["password"] = proxy["password"]
+                    clash_proxy["obfs"] = proxy["obfs"]
+                    clash_proxy["protocol"] = proxy["protocol"]
+                    clash_proxy["udp"] = True
+                    if "obfs-param" in proxy:
+                        clash_proxy["obfs-param"] = proxy["obfs-param"]
+                    if "protocol-param" in proxy:
+                        clash_proxy["protocol-param"] = proxy["protocol-param"]
                 elif proxy.get("is_http", False) == True:
                     clash_proxy["name"] = proxy["ps"]
                     clash_proxy["type"] = "http"
@@ -364,6 +434,7 @@ class SubscriptionResponder(object):
                     clash_proxy["port"] = int(proxy["port"])
                     clash_proxy["udp"] = True
                 else:
+                    # vmess
                     # kcp not supported
                     if proxy['net'] == "kcp":
                         continue
@@ -453,9 +524,15 @@ class SubscriptionResponder(object):
         proxy_copy = copy.deepcopy(proxy)
         proxy_copy["password"] = self.urlsafe_base64_encode(proxy_copy["password"])
         proxy_copy["ps"] = self.urlsafe_base64_encode(proxy_copy["ps"].strip())
-        proxy_copy["group"] = self.urlsafe_base64_encode(proxy_copy["group"])
+        proxy_copy["group"] = self.urlsafe_base64_encode(proxy_copy.get("group", "metasub by shunf4"))
+
+        proxy_copy["protocol"] = proxy_copy.get("protocol", "origin")
+        proxy_copy["obfs"] = proxy_copy.get("obfs", "plain")
+        proxy_copy["obfsparam"] = self.urlsafe_base64_encode(proxy_copy.get("obfs-param", ""))
+        proxy_copy["protoparam"] = self.urlsafe_base64_encode(proxy_copy.get("protocol-param", ""))
+
         uri = "ssr://"
-        uri += self.urlsafe_base64_encode("%(add)s:%(port)s:origin:%(enc)s:plain:%(password)s/?obfsparam=&remarks=%(ps)s&group=%(group)s" % proxy_copy)
+        uri += self.urlsafe_base64_encode("%(add)s:%(port)s:%(protocol)s:%(enc)s:%(obfs)s:%(password)s/?obfsparam=%(obfsparam)s&protoparam=%(protoparam)s&remarks=%(ps)s&group=%(group)s" % proxy_copy)
         return uri
 
     def get_ssr_result(self, raw_proxies: List[Dict]):
@@ -465,7 +542,6 @@ class SubscriptionResponder(object):
                 "port": "0",
                 "enc": "aes-256-gcm",
                 "ps": "SSR Subscribe here",
-                "group": "metasub by shunf4",
             }
 
         all_uris = self.make_ssr_uri(proxy_description)
@@ -474,6 +550,9 @@ class SubscriptionResponder(object):
         for proxy in raw_proxies:
             if isinstance(proxy, dict):
                 if proxy.get("is_ss", False) == True:
+                    all_uris += self.make_ssr_uri(proxy)
+                    all_uris += "\n"
+                elif proxy.get("is_ssr", False) == True:
                     all_uris += self.make_ssr_uri(proxy)
                     all_uris += "\n"
                 elif proxy.get("is_http", False) == True:
@@ -503,6 +582,8 @@ class SubscriptionResponder(object):
                     # TODO
                     pass
                 elif proxy.get("is_socks5", False) == True:
+                    pass
+                elif proxy.get("is_ssr", False) == True:
                     pass
                 else:
                     all_uris += "vmess://"
