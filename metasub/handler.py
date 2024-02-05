@@ -91,6 +91,14 @@ class SubscriptionResponder(object):
         self.is_debug = any(map(is_flag_value_enabled, [query_debug, query_d]))
         self.is_grouping_enabled = is_flag_value_enabled(query_group)
 
+        self.clashray_curr_as_publisher = self.query_dict.get("clashray_curr_as_publisher", [""])[0]
+        self.clashray_curr_is_as_visitor = self.query_dict.get("clashray_curr_is_as_visitor", [""])[0]
+        self.clashray_send_dir = self.query_dict.get("clashray_send_dir", [""])[0]
+        if self.clashray_curr_is_as_visitor == "true":
+            self.clashray_curr_is_as_visitor = "1"
+        if self.clashray_curr_is_as_visitor == "false":
+            self.clashray_curr_is_as_visitor = "0"
+
         if "url" in self.query_dict:
             query_url = self.query_dict["url"][0]
             self.metasub_location = query_url
@@ -393,6 +401,16 @@ class SubscriptionResponder(object):
 
     def get_clash_result(self, raw_proxies: List[Dict]) -> str:
         clash_result = copy.deepcopy(self.clash_base)
+
+        if self.clashray_curr_as_publisher is not None and self.clashray_curr_as_publisher != "":
+            clash_result["clashray-net-curr-as-publisher"] = self.clashray_curr_as_publisher
+
+        if self.clashray_curr_is_as_visitor == "0":
+            clash_result["clashray-net-curr-is-as-visitor"] = False
+        elif self.clashray_curr_is_as_visitor == "1":
+            clash_result["clashray-net-curr-is-as-visitor"] = True
+
+        clash_result["clashray-send-dir"] = self.clashray_send_dir
 
         for proxy in raw_proxies:
             clash_proxy = {}
