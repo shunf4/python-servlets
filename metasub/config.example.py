@@ -4,6 +4,8 @@ KEY_PATH_MAP = {
     "secretdonttellothers": "./sub.txt",
 }
 
+STATE_PATH = "/path/to/state.yaml"
+
 METASUB_TIMEOUT_TOTAL_SEC = 13
 SUB_TIMEOUT_TOTAL_SEC = 30
 

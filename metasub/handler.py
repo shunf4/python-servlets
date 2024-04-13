@@ -9,6 +9,8 @@ import re
 import os
 import sys
 import itertools
+import contextlib
+import datetime
 import copy
 import traceback
 from quart import request
@@ -88,12 +90,15 @@ class SubscriptionResponder(object):
         query_debug = self.query_dict.get("debug", ["0"])[0]
         query_d = self.query_dict.get("d", ["0"])[0]
         query_group = self.query_dict.get("group", ["0"])[0]
+        query_usecache = self.query_dict.get("usecache", ["0"])[0]
         self.is_debug = any(map(is_flag_value_enabled, [query_debug, query_d]))
         self.is_grouping_enabled = is_flag_value_enabled(query_group)
+        self.is_use_cache = is_flag_value_enabled(query_usecache)
 
         self.clashray_curr_as_publisher = self.query_dict.get("clashray_curr_as_publisher", [""])[0]
         self.clashray_curr_is_as_visitor = self.query_dict.get("clashray_curr_is_as_visitor", [""])[0]
         self.clashray_send_dir = self.query_dict.get("clashray_send_dir", [""])[0]
+        self.clashray_android_transports = self.query_dict.get("clashray_android_transports", [""])[0]
         if self.clashray_curr_is_as_visitor == "true":
             self.clashray_curr_is_as_visitor = "1"
         if self.clashray_curr_is_as_visitor == "false":
@@ -175,11 +180,28 @@ class SubscriptionResponder(object):
 
     async def get_proxies_from_sub_url(self, url, filter, exclude_filter, allow_ss, allow_ssr):
         result = []
-        async with aiohttp.ClientSession(connector=config.create_connector_for_sub(url), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC)) as session:
-            self.debug(f"Getting sub from", url)
-            resp = await session.get(url)
-            raw_sub = await resp.text()
-            self.debug(f"Got sub from {url} ({len(raw_sub)} chars)")
+        if self.is_use_cache:
+            self.debug(f"Getting sub from", url, " (from state cache)")
+            raw_sub = self.state.get("CACHED_SUB_URL_CONTENT_" + url, "")
+            raw_sub_time = self.state.get("CACHED_SUB_URL_TIME_" + url, "")
+            if raw_sub_time != "":
+                self.debug(url, " has cache, cached at " + raw_sub_time)
+                result = [{
+                        "is_ss": True,
+                        "add": "127.0.0.1",
+                        "port": 11111,
+                        "enc": "aes-256-gcm",
+                        "password": "a",
+                        "ps": "Cached at " + raw_sub_time
+                    }]
+        else:
+            async with aiohttp.ClientSession(connector=config.create_connector_for_sub(url), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC)) as session:
+                self.debug(f"Getting sub from", url)
+                resp = await session.get(url)
+                raw_sub = await resp.text()
+                self.debug(f"Got sub from {url} ({len(raw_sub)} chars)")
+                self.state["CACHED_SUB_URL_CONTENT_" + url] = raw_sub
+                self.state["CACHED_SUB_URL_TIME_" + url] = str(datetime.datetime.now())
 
         if raw_sub.startswith("ssd://"):
             proxies = []
@@ -216,6 +238,8 @@ class SubscriptionResponder(object):
                         ss_obj["plugin-opts"] = ss_plugin_parse_result
                 self.debug("Adding proxy: " + json.dumps(ss_obj, ensure_ascii=False))
                 proxies.append(ss_obj)
+        elif raw_sub == "" or raw_sub == b"":
+            proxies = []
         else:
             proxies = self.base64_decode(raw_sub).split("\n")
 
@@ -410,7 +434,10 @@ class SubscriptionResponder(object):
         elif self.clashray_curr_is_as_visitor == "1":
             clash_result["clashray-net-curr-is-as-visitor"] = True
 
-        clash_result["clashray-send-dir"] = self.clashray_send_dir
+        if self.clashray_send_dir is not None and self.clashray_send_dir != "":
+            clash_result["clashray-send-dir"] = self.clashray_send_dir
+        if self.clashray_android_transports is not None and self.clashray_android_transports != "":
+            clash_result["reverse-enable-on-android-type-transports"] = list(map(lambda x:int(x.strip()), self.clashray_android_transports.split(",")))
 
         for proxy in raw_proxies:
             clash_proxy = {}
@@ -616,6 +643,14 @@ class SubscriptionResponder(object):
 
     async def worker(self):
         try:
+            try:
+                with contextlib.closing(open(config.STATE_PATH, mode="r", encoding="utf-8")) as sf:
+                    self.debug(f"Reading state from", config.STATE_PATH)
+                    self.state = json.loads(sf.read())
+            except Exception as e:
+                self.debug(f"Reading state error {e}, fallback to empty")
+                self.state = {}
+
             await self.get_metasub()
             raw_proxies = await self.fetch_raw_proxies()
             
@@ -628,6 +663,14 @@ class SubscriptionResponder(object):
                 self.body_writer.write(self.get_ssr_result(raw_proxies))
             else:
                 self.body_writer.write(self.get_ss_v2ss_result(raw_proxies))
+
+            self.debug("Saving state")
+            try:
+                with contextlib.closing(open(config.STATE_PATH, mode="w", encoding="utf-8")) as sf:
+                    self.debug(f"Writing state to", config.STATE_PATH)
+                    sf.write(json.dumps(self.state))
+            except Exception as e:
+                self.debug(f"Writing state error {e}")
 
             self.body_writer.end()
             self.body_writer = None
