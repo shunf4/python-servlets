@@ -14,7 +14,8 @@ def create_connector_for_metasub(url: str):
         proxy_type = ProxyType.SOCKS5,
         host = '127.0.0.1',
         port = 1080,
-        rdns = True
+        rdns = True,
+        verify_ssl = True,
     )
     direct_connector = None
     return direct_connector
@@ -24,7 +25,8 @@ def create_connector_for_sub(url: str):
         proxy_type = ProxyType.SOCKS5,
         host = '127.0.0.1',
         port = 1080,
-        rdns = True
+        rdns = True,
+        verify_ssl = True,
     )
     direct_connector = None
     return direct_connector

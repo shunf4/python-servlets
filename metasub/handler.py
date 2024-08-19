@@ -99,10 +99,17 @@ class SubscriptionResponder(object):
         self.clashray_curr_is_as_visitor = self.query_dict.get("clashray_curr_is_as_visitor", [""])[0]
         self.clashray_send_dir = self.query_dict.get("clashray_send_dir", [""])[0]
         self.clashray_android_transports = self.query_dict.get("clashray_android_transports", [""])[0]
+        self.clashray_net_visitor_tunnel_no_hosts_nor_listening = self.query_dict.get("clashray_net_visitor_tunnel_no_hosts_nor_listening", [""])[0]
+        self.listener_filter_exclude_ports = self.query_dict.get("listener_filter_exclude_ports", [""])[0]
         if self.clashray_curr_is_as_visitor == "true":
             self.clashray_curr_is_as_visitor = "1"
         if self.clashray_curr_is_as_visitor == "false":
             self.clashray_curr_is_as_visitor = "0"
+        if self.clashray_net_visitor_tunnel_no_hosts_nor_listening == "true":
+            self.clashray_net_visitor_tunnel_no_hosts_nor_listening = "1"
+        if self.clashray_net_visitor_tunnel_no_hosts_nor_listening == "false":
+            self.clashray_net_visitor_tunnel_no_hosts_nor_listening = "0"
+
 
         if "url" in self.query_dict:
             query_url = self.query_dict["url"][0]
@@ -434,10 +441,18 @@ class SubscriptionResponder(object):
         elif self.clashray_curr_is_as_visitor == "1":
             clash_result["clashray-net-curr-is-as-visitor"] = True
 
+        if self.clashray_net_visitor_tunnel_no_hosts_nor_listening == "0":
+            clash_result["clashray-net-visitor-tunnel-no-hosts-nor-listening"] = False
+        elif self.clashray_net_visitor_tunnel_no_hosts_nor_listening == "1":
+            clash_result["clashray-net-visitor-tunnel-no-hosts-nor-listening"] = True
+
+
         if self.clashray_send_dir is not None and self.clashray_send_dir != "":
             clash_result["clashray-send-dir"] = self.clashray_send_dir
         if self.clashray_android_transports is not None and self.clashray_android_transports != "":
             clash_result["reverse-enable-on-android-type-transports"] = list(map(lambda x:int(x.strip()), self.clashray_android_transports.split(",")))
+        if self.listener_filter_exclude_ports is not None and self.listener_filter_exclude_ports != "":
+            clash_result["listener-filter-exclude-ports"] = list(map(lambda x:int(x.strip()), self.listener_filter_exclude_ports.split(",")))
 
         for proxy in raw_proxies:
             clash_proxy = {}
@@ -508,7 +523,7 @@ class SubscriptionResponder(object):
                 for group in clash_result.get("proxy-groups", []):
                     if "name" not in group:
                         raise ValueError(f"\"name\" not in one of the proxy-groups")
-                    if "Node Sel" in group["name"]:
+                    if group["name"].startswith("Node Sel-") or group["name"].startswith("NodeSel-") or group["name"].startswith("Sel-"):
                         group["proxies"].append(clash_proxy["name"])
                 
         if self.is_clashray:
