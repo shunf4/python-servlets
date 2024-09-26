@@ -185,7 +185,7 @@ class SubscriptionResponder(object):
         self.clash_base = metasub.get("clash-base", self.clash_base)
         self.entries = metasub.get("entries")
 
-    async def get_proxies_from_sub_url(self, url, filter, exclude_filter, allow_ss, allow_ssr):
+    async def get_proxies_from_sub_url(self, url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr):
         result = []
         if self.is_use_cache:
             self.debug(f"Getting sub from", url, " (from state cache)")
@@ -199,7 +199,7 @@ class SubscriptionResponder(object):
                         "port": 11111,
                         "enc": "aes-256-gcm",
                         "password": "a",
-                        "ps": "Cached at " + raw_sub_time
+                        "ps": ps_prefix + "Cached at " + raw_sub_time
                     }]
         else:
             async with aiohttp.ClientSession(connector=config.create_connector_for_sub(url), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC)) as session:
@@ -220,7 +220,7 @@ class SubscriptionResponder(object):
                 "password": ssd_obj["password"],
             }
             for ss in ssd_obj["servers"]:
-                ss_obj = {**common_ss_obj, **{"add": ss["server"], "ps": ss["remarks"]}}
+                ss_obj = {**common_ss_obj, **{"add": ss["server"], "ps": ps_prefix + ss["remarks"]}}
                 if "port" in ss:
                     ss_obj["port"] = ss["port"]
                 if "password" in ss:
@@ -256,11 +256,13 @@ class SubscriptionResponder(object):
         for proxy in proxies:
             if isinstance(proxy, dict):
                 if filter_regex.fullmatch(proxy['ps']) and not exclude_regex.fullmatch(proxy['ps']):
+                    proxy['ps'] = ps_prefix + proxy['ps']
                     result.append(proxy)
             elif proxy.startswith("vmess://"):
                 proxy = proxy[len("vmess://"):]
                 proxy = json.loads(self.base64_decode(proxy))
                 if filter_regex.fullmatch(proxy['ps']) and not exclude_regex.fullmatch(proxy['ps']):
+                    proxy['ps'] = ps_prefix + proxy['ps']
                     result.append(proxy)
             elif proxy.startswith("ss://") and allow_ss:
                 # ss://cmM0LW1kNTpwYXNzd2Q=@192.168.100.1:8888/?plugin=obfs-local%3Bobfs%3Dhttp#Example2
@@ -321,7 +323,7 @@ class SubscriptionResponder(object):
                         "port": ss_port,
                         "enc": ss_enc,
                         "password": ss_password,
-                        "ps": ss_ps
+                        "ps": ps_prefix + ss_ps
                     }
                     
                     if ss_plugin_parse_result:
@@ -372,7 +374,7 @@ class SubscriptionResponder(object):
                     "port": ssr_port,
                     "enc": ssr_method,
                     "password": ssr_pass,
-                    "ps": ssr_ps,
+                    "ps": ps_prefix + ssr_ps,
                     "obfs": ssr_obfs,
                     "protocol": ssr_protocol,
                     **ssr_extra_param_result
@@ -399,9 +401,11 @@ class SubscriptionResponder(object):
             if not isinstance(entry, dict):
                 raise TypeError(f"{repr(entry)} is not a dict: {type(entry).__name__}")
             subscribe_url = entry.get("subscribe_url")
+            ps_prefix = entry.get("ps_prefix", "")
             if subscribe_url is not None:
                 tasks.append(self.get_proxies_from_sub_url(
                     subscribe_url,
+                    ps_prefix,
                     entry.get("filter", r'^.*$'),
                     entry.get("exclude_filter", r'^$'),
                     allow_ss,
