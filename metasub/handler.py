@@ -335,17 +335,102 @@ class SubscriptionResponder(object):
                         self.debug(f"Added SS proxy: {repr(ss_obj)}")
                     
                     result.append(ss_obj)
+            elif proxy.startswith("trojan://"):
+                # trojan://uuid@host:port?sni=sni#ps
+                split_by_hash = proxy[len("trojan://"):].split('#')
+                ps = urllib.parse.unquote(split_by_hash[-1])
+                if len(split_by_hash) < 2 or filter_regex.fullmatch(ps) and not exclude_regex.fullmatch(ps):
+                    trojan_body = '#'.join(split_by_hash[:-1])
+                    trojan_ps = "TrojanServer" if len(split_by_hash) < 2 else ps.strip()
+                    if not ('@' in trojan_body):
+                        trojan_body = self.compat_base64_decode(trojan_body)
+
+                    split_by_at = trojan_body.split("@")
+                    trojan_user = split_by_at[0]
+
+                    trojan_add, trojan_port = split_by_at[1].split(":")
+
+                    trojan_port = ''.join(itertools.takewhile(str.isdigit, trojan_port))
+                    
+                    # obfs plugin
+                    
+                    trojan_body_query_parts = trojan_body.split("?")
+                    trojan_sni = None
+
+                    if len(trojan_body_query_parts) >= 2:
+                        trojan_body_query_str = '?'.join(trojan_body_query_parts[1:])
+                        trojan_body_query = dict(urllib.parse.parse_qsl(trojan_body_query_str))
+                        trojan_sni = trojan_body_query['sni']
+
+                    trojan_obj = {
+                        "is_trojan": True,
+                        "add": trojan_add,
+                        "port": trojan_port,
+                        "password": trojan_user,
+                        "ps": ps_prefix + trojan_ps
+                    }
+
+                    if trojan_sni:
+                        trojan_obj["sni"] = trojan_sni
+                    
+                    if self.is_debug:
+                        trojan_obj.update({"origin": proxy})
+                        self.debug(f"Added Trojan proxy: {repr(trojan_obj)}")
+                    
+                    result.append(trojan_obj)
+            elif proxy.startswith("vless://"):
+                split_by_hash = proxy[len("vless://"):].split('#')
+                ps = urllib.parse.unquote(split_by_hash[-1])
+                if len(split_by_hash) < 2 or filter_regex.fullmatch(ps) and not exclude_regex.fullmatch(ps):
+                    vless_body = '#'.join(split_by_hash[:-1])
+                    vless_ps = "VlessServer" if len(split_by_hash) < 2 else ps.strip()
+                    if not ('@' in vless_body):
+                        vless_body = self.compat_base64_decode(vless_body)
+
+                    split_by_at = vless_body.split("@")
+                    vless_user = split_by_at[0]
+
+                    vless_add, vless_port = split_by_at[1].split(":")
+
+                    vless_port = ''.join(itertools.takewhile(str.isdigit, vless_port))
+                    
+                    vless_body_query_parts = vless_body.split("?")
+                    vless_body_query = None
+
+                    if len(vless_body_query_parts) >= 2:
+                        vless_body_query_str = '?'.join(vless_body_query_parts[1:])
+                        vless_body_query = dict(urllib.parse.parse_qsl(vless_body_query_str))
+
+                    vless_obj = {
+                        "is_vless": True,
+                        "add": vless_add,
+                        "port": vless_port,
+                        "uuid": vless_user,
+                        "ps": ps_prefix + vless_ps
+                    }
+
+                    if vless_body_query:
+                        vless_obj = {**vless_obj, **vless_body_query}
+
+                    if self.is_debug:
+                        vless_obj.update({"origin": proxy})
+                        self.debug(f"Added Vless proxy: {repr(vless_obj)}")
+                    
+                    result.append(vless_obj)
+
             elif proxy.startswith("ssr://") and allow_ssr:
                 # ssr://base64(host:port:protocol:method:obfs:base64pass/?obfsparam=base64param&protoparam=base64param&remarks=base64remarks&group=base64group&udpport=0&uot=0)
                 # https://github.com/HMBSbige/ShadowsocksR-Windows/wiki/SSR-QRcode-scheme
                 proxy = proxy[len("ssr://"):]
                 proxy = self.base64_decode(proxy)
-                split_by_slash = proxy.split('/?')
+                split_by_slash = proxy.split('?')
                 ssr_basic_info = split_by_slash[0]
+                if ssr_basic_info.endswith("/"):
+                    ssr_basic_info = ssr_basic_info[0:len(ssr_basic_info) - 1]
                 ssr_extra_param_str = ""
                 ssr_ps = "SSRServer"
                 if len(split_by_slash) > 1:
-                    ssr_extra_param_str = "/?".join(split_by_slash[1:])
+                    ssr_extra_param_str = "?".join(split_by_slash[1:])
 
                 [
                     ssr_host,
@@ -458,6 +543,7 @@ class SubscriptionResponder(object):
         if self.listener_filter_exclude_ports is not None and self.listener_filter_exclude_ports != "":
             clash_result["listener-filter-exclude-ports"] = list(map(lambda x:int(x.strip()), self.listener_filter_exclude_ports.split(",")))
 
+        name_dedup_set = set()
         for proxy in raw_proxies:
             clash_proxy = {}
             if isinstance(proxy, dict):
@@ -497,6 +583,29 @@ class SubscriptionResponder(object):
                     clash_proxy["server"] = proxy["add"]
                     clash_proxy["port"] = int(proxy["port"])
                     clash_proxy["udp"] = True
+                elif proxy.get("is_vless", False) == True:
+                    clash_proxy["name"] = proxy["ps"]
+                    clash_proxy["type"] = "vless"
+                    clash_proxy["server"] = proxy["add"]
+                    clash_proxy["port"] = int(proxy["port"])
+                    clash_proxy["uuid"] = proxy["uuid"]
+                    clash_proxy["flow"] = "xtls-rprx-vision"
+                    clash_proxy["packet-encoding"] = "xudp"
+                    clash_proxy["network"] = "tcp"
+                    clash_proxy["udp"] = True
+                    if proxy.get("type", "") != "":
+                        clash_proxy["network"] = proxy["type"]
+                elif proxy.get("is_trojan", False) == True:
+                    clash_proxy["name"] = proxy["ps"]
+                    clash_proxy["type"] = "trojan"
+                    clash_proxy["server"] = proxy["add"]
+                    clash_proxy["port"] = int(proxy["port"])
+                    clash_proxy["password"] = proxy["password"]
+                    clash_proxy["sni"] = proxy["sni"]
+                    clash_proxy["network"] = "tcp"
+                    clash_proxy["udp"] = True
+
+
                 else:
                     # vmess
                     # kcp not supported
@@ -521,6 +630,11 @@ class SubscriptionResponder(object):
                             clash_proxy["network"] = "ws"
                     clash_proxy["ws-path"] = proxy.get('path', "")
                     clash_proxy["ws-headers"] = {"Host": proxy.get('host', "")}
+
+                if clash_proxy["name"] in name_dedup_set:
+                    clash_proxy["name"] = clash_proxy["name"] + str(datetime.datetime.now().timestamp())
+                else:
+                    name_dedup_set.add(clash_proxy["name"])
 
                 clash_result["proxies"].append(clash_proxy)
 
