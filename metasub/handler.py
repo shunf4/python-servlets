@@ -185,6 +185,13 @@ class SubscriptionResponder(object):
         self.clash_base = metasub.get("clash-base", self.clash_base)
         self.entries = metasub.get("entries")
 
+    async def get_proxies_from_sub_url_report_err(self, url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr):
+        try:
+            return await self.get_proxies_from_sub_url(url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr)
+        except Exception as e:
+            self.debug(f"Error getting sub from", url, " (ps_prefix=", ps_prefix, ") in get_proxies_from_sub_url")
+            raise e
+
     async def get_proxies_from_sub_url(self, url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr):
         result = []
         if self.is_use_cache:
@@ -488,7 +495,7 @@ class SubscriptionResponder(object):
             subscribe_url = entry.get("subscribe_url")
             ps_prefix = entry.get("ps_prefix", "")
             if subscribe_url is not None:
-                tasks.append(self.get_proxies_from_sub_url(
+                tasks.append(self.get_proxies_from_sub_url_report_err(
                     subscribe_url,
                     ps_prefix,
                     entry.get("filter", r'^.*$'),
