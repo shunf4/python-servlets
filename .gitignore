@@ -6,4 +6,5 @@ mypac/pac.txt
 deploy.sh
 deploy/
 VENV
+/py-servlet-data
 
