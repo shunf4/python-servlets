@@ -91,9 +91,11 @@ class SubscriptionResponder(object):
         query_d = self.query_dict.get("d", ["0"])[0]
         query_group = self.query_dict.get("group", ["0"])[0]
         query_usecache = self.query_dict.get("usecache", ["0"])[0]
+        query_fullusecache = self.query_dict.get("fullusecache", ["0"])[0]
         self.is_debug = any(map(is_flag_value_enabled, [query_debug, query_d]))
         self.is_grouping_enabled = is_flag_value_enabled(query_group)
         self.is_use_cache = is_flag_value_enabled(query_usecache)
+        self.is_full_use_cache = is_flag_value_enabled(query_fullusecache)
 
         self.clashray_curr_as_publisher = self.query_dict.get("clashray_curr_as_publisher", [""])[0]
         self.clashray_curr_is_as_visitor = self.query_dict.get("clashray_curr_is_as_visitor", [""])[0]
@@ -194,12 +196,14 @@ class SubscriptionResponder(object):
 
     async def get_proxies_from_sub_url(self, url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr):
         result = []
+        cache_ok = False
         if self.is_use_cache:
             self.debug(f"Getting sub from", url, " (from state cache)")
             raw_sub = self.state.get("CACHED_SUB_URL_CONTENT_" + url, "")
             raw_sub_time = self.state.get("CACHED_SUB_URL_TIME_" + url, "")
             if raw_sub_time != "":
                 self.debug(url, " has cache, cached at " + raw_sub_time)
+                cache_ok = True
                 result = [{
                         "is_ss": True,
                         "add": "127.0.0.1",
@@ -208,7 +212,7 @@ class SubscriptionResponder(object):
                         "password": "a",
                         "ps": ps_prefix + "Cached at " + raw_sub_time
                     }]
-        else:
+        if not cache_ok and not self.is_full_use_cache:
             async with aiohttp.ClientSession(connector=config.create_connector_for_sub(url), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC)) as session:
                 self.debug(f"Getting sub from", url)
                 resp = await session.get(url)
@@ -786,7 +790,7 @@ class SubscriptionResponder(object):
             try:
                 with contextlib.closing(open(config.STATE_PATH, mode="r", encoding="utf-8")) as sf:
                     self.debug(f"Reading state from", config.STATE_PATH)
-                    self.state = json.loads(sf.read())
+                    self.state = yaml.safe_load(sf.read())
             except Exception as e:
                 self.debug(f"Reading state error {e}, fallback to empty")
                 self.state = {}
@@ -808,7 +812,7 @@ class SubscriptionResponder(object):
             try:
                 with contextlib.closing(open(config.STATE_PATH, mode="w", encoding="utf-8")) as sf:
                     self.debug(f"Writing state to", config.STATE_PATH)
-                    sf.write(json.dumps(self.state))
+                    sf.write(yaml.safe_dump(self.state))
             except Exception as e:
                 self.debug(f"Writing state error {e}")
 

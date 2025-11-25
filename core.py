@@ -15,6 +15,8 @@ app = Quart("python-servlets")
 
 PROJECT_PATH = os.path.dirname(os.path.abspath(__file__))
 
+os.chdir(PROJECT_PATH)
+
 def format_exception_with_trace(ex: Exception):
     return "\n".join(traceback.format_exception(type(ex), ex, ex.__traceback__))
 
