@@ -13,6 +13,7 @@ import contextlib
 import datetime
 import copy
 import traceback
+import pathlib
 from quart import request
 from typing import List, Dict
 
@@ -166,12 +167,10 @@ class SubscriptionResponder(object):
                 self.debug(f"Got metasub ({len(raw_metasub)} chars)")
         elif self.metasub_location_type == "FILEPATH":
             old_cwd = os.getcwd()
-            os.chdir(os.path.dirname(os.path.abspath(__file__)))
-            async with aiofiles.open(self.metasub_location, mode="r", encoding="utf-8") as f:
+            async with aiofiles.open(str(pathlib.Path(os.path.dirname(os.path.abspath(__file__)), self.metasub_location).resolve()), mode="r", encoding="utf-8") as f:
                 self.debug(f"Reading metasub from", self.metasub_location)
                 raw_metasub = await f.read()
                 self.debug(f"Got metasub ({len(raw_metasub)} chars)")
-            os.chdir(old_cwd)
 
         metasub = yaml.safe_load(raw_metasub)
         
@@ -788,8 +787,8 @@ class SubscriptionResponder(object):
     async def worker(self):
         try:
             try:
-                with contextlib.closing(open(config.STATE_PATH, mode="r", encoding="utf-8")) as sf:
-                    self.debug(f"Reading state from", config.STATE_PATH)
+                self.debug(f"Reading state from", config.STATE_PATH)
+                with contextlib.closing(open(str(pathlib.Path(os.path.dirname(os.path.abspath(__file__)), config.STATE_PATH).resolve()), mode="r", encoding="utf-8")) as sf:
                     self.state = yaml.safe_load(sf.read())
             except Exception as e:
                 self.debug(f"Reading state error {e}, fallback to empty")
@@ -810,8 +809,8 @@ class SubscriptionResponder(object):
 
             self.debug("Saving state")
             try:
-                with contextlib.closing(open(config.STATE_PATH, mode="w", encoding="utf-8")) as sf:
-                    self.debug(f"Writing state to", config.STATE_PATH)
+                self.debug(f"Writing state to", config.STATE_PATH)
+                with contextlib.closing(open(str(pathlib.Path(os.path.dirname(os.path.abspath(__file__)), config.STATE_PATH).resolve()), mode="w", encoding="utf-8")) as sf:
                     sf.write(yaml.safe_dump(self.state))
             except Exception as e:
                 self.debug(f"Writing state error {e}")
