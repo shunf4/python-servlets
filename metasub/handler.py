@@ -366,17 +366,20 @@ class SubscriptionResponder(object):
                     
                     trojan_body_query_parts = trojan_body.split("?")
                     trojan_sni = None
+                    trojan_allow_insecure = False
 
                     if len(trojan_body_query_parts) >= 2:
                         trojan_body_query_str = '?'.join(trojan_body_query_parts[1:])
                         trojan_body_query = dict(urllib.parse.parse_qsl(trojan_body_query_str))
                         trojan_sni = trojan_body_query['sni']
+                        trojan_allow_insecure = str(trojan_body_query.get('allowInsecure', '0')) == '1'
 
                     trojan_obj = {
                         "is_trojan": True,
                         "add": trojan_add,
                         "port": trojan_port,
                         "password": trojan_user,
+                        "allow_insecure": trojan_allow_insecure,
                         "ps": ps_prefix + trojan_ps
                     }
 
@@ -612,6 +615,7 @@ class SubscriptionResponder(object):
                     clash_proxy["port"] = int(proxy["port"])
                     clash_proxy["password"] = proxy["password"]
                     clash_proxy["sni"] = proxy["sni"]
+                    clash_proxy["skip-cert-verify"] = proxy.get("allow_insecure", False)
                     clash_proxy["network"] = "tcp"
                     clash_proxy["udp"] = True
 
