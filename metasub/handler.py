@@ -212,9 +212,14 @@ class SubscriptionResponder(object):
                         "ps": ps_prefix + "Cached at " + raw_sub_time
                     }]
         if not cache_ok and not self.is_full_use_cache:
-            async with aiohttp.ClientSession(connector=config.create_connector_for_sub(url), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC)) as session:
-                self.debug(f"Getting sub from", url)
-                resp = await session.get(url)
+            real_url_wo_refresher_split = url.split("#")
+            if len(real_url_wo_refresher_split) > 1:
+                real_url_wo_refresher = '#'.join(real_url_wo_refresher_split[0:-1])
+            else:
+                real_url_wo_refresher = real_url_wo_refresher_split[0]
+            async with aiohttp.ClientSession(connector=config.create_connector_for_sub(real_url_wo_refresher), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC)) as session:
+                self.debug(f"Getting sub from", real_url_wo_refresher)
+                resp = await session.get(real_url_wo_refresher)
                 raw_sub = await resp.text()
                 self.debug(f"Got sub from {url} ({len(raw_sub)} chars)")
                 self.state["CACHED_SUB_URL_CONTENT_" + url] = raw_sub
@@ -603,11 +608,24 @@ class SubscriptionResponder(object):
                     clash_proxy["port"] = int(proxy["port"])
                     clash_proxy["uuid"] = proxy["uuid"]
                     clash_proxy["flow"] = "xtls-rprx-vision"
-                    clash_proxy["packet-encoding"] = "xudp"
+                    # clash_proxy["packet-encoding"] = "xudp"
+                    clash_proxy["xudp"] = True
                     clash_proxy["network"] = "tcp"
                     clash_proxy["udp"] = True
+                    vless_sni = proxy.get("servername", proxy.get("sni", None))
+                    if vless_sni:
+                        clash_proxy["servername"] = vless_sni
                     if proxy.get("type", "") != "":
                         clash_proxy["network"] = proxy["type"]
+                    if proxy.get("security", "") == "reality":
+                        clash_proxy["tls"] = True
+                        clash_proxy["client-fingerprint"] = proxy.get("fp", "chrome")
+                        vless_alpn = proxy.get("alpn", "")
+                        if vless_alpn:
+                            clash_proxy["alpn"] = vless_alpn.split(",")
+                        clash_proxy["reality-opts"] = clash_proxy.get("reality-opts", {})
+                        clash_proxy["reality-opts"]["public-key"] = proxy.get("pbk", "")
+                        clash_proxy["reality-opts"]["short-id"] = proxy.get("sid", "")
                 elif proxy.get("is_trojan", False) == True:
                     clash_proxy["name"] = proxy["ps"]
                     clash_proxy["type"] = "trojan"
