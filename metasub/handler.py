@@ -51,10 +51,21 @@ class SubscriptionResponder(object):
 
     def base64_decode(self, x):
         return base64.urlsafe_b64decode(x + '=' * (-len(x) % 4)).decode("utf-8")
+    
+    def base64_decode_for_print(self, x):
+        a = ''
+        try:
+            a = base64.urlsafe_b64decode(x + '=' * (-len(x) % 4))
+        except Exception as e:
+            try:
+                a = base64.urlsafe_b64decode(x + '=' * (-len(x) % 4))
+            except Exception as e2:
+                return f'(base64/urlsafe base64 undecodable: {e})'
+        return a.decode("utf-8", errors='backslashreplace')
 
     def urlsafe_base64_decode(self, x):
         return base64.urlsafe_b64decode(x + '=' * (-len(x) % 4)).decode("utf-8")
-
+   
     # Base64 decoder that is compatible with both urlsafe and non-urlsafe formats.
     def compat_base64_decode(self, x):
         self.debug(f"Base64 decoding: {x}")
@@ -217,11 +228,11 @@ class SubscriptionResponder(object):
                 real_url_wo_refresher = '#'.join(real_url_wo_refresher_split[0:-1])
             else:
                 real_url_wo_refresher = real_url_wo_refresher_split[0]
-            async with aiohttp.ClientSession(connector=config.create_connector_for_sub(real_url_wo_refresher), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC)) as session:
+            async with aiohttp.ClientSession(connector=config.create_connector_for_sub(real_url_wo_refresher), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC), headers={'User-Agent': 'v2ray'}) as session:
                 self.debug(f"Getting sub from", real_url_wo_refresher)
                 resp = await session.get(real_url_wo_refresher)
                 raw_sub = await resp.text()
-                self.debug(f"Got sub from {url} ({len(raw_sub)} chars)")
+                self.debug(f"Got sub from {url} ({len(raw_sub)} chars, first 100: {raw_sub[0:100]}), b64 decoded first 100: {self.base64_decode_for_print(raw_sub)[0:100]}")
                 self.state["CACHED_SUB_URL_CONTENT_" + url] = raw_sub
                 self.state["CACHED_SUB_URL_TIME_" + url] = str(datetime.datetime.now())
 
