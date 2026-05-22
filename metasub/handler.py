@@ -125,10 +125,27 @@ class SubscriptionResponder(object):
             self.clashray_net_visitor_tunnel_no_hosts_nor_listening = "0"
 
 
-        if "url" in self.query_dict:
-            query_url = self.query_dict["url"][0]
-            self.metasub_location = query_url
-            self.metasub_location_type = "URL"
+        # if "url" in self.query_dict:
+        #     query_url = self.query_dict["url"][0]
+        #     self.metasub_location = query_url
+        #     self.metasub_location_type = "URL"
+        # else:
+
+        self.is_support_anytls = False
+
+        self.metasub_key = None
+        if "k2" in self.query_dict:
+            query_key = self.query_dict.get("k2", [""])[0]
+            if query_key in config.KEY_PATH_MAP:
+                self.metasub_location = config.KEY_PATH_MAP[query_key]
+                if self.metasub_location.startswith("http://") or self.metasub_location.startswith("https://"):
+                    self.metasub_location_type = "URL"
+                else:
+                    self.metasub_location_type = "FILEPATH"
+                self.is_support_anytls = True
+                self.metasub_key = query_key
+            else:
+                raise ValueError(f"No such k2: {query_key if query_key else '(empty)'}")
         else:
             query_key = self.query_dict.get("key", [""])[0]
             if query_key in config.KEY_PATH_MAP:
@@ -137,6 +154,7 @@ class SubscriptionResponder(object):
                     self.metasub_location_type = "URL"
                 else:
                     self.metasub_location_type = "FILEPATH"
+                self.metasub_key = query_key
             else:
                 raise ValueError(f"No such key: {query_key if query_key else '(empty)'}")
 
@@ -446,6 +464,44 @@ class SubscriptionResponder(object):
                         self.debug(f"Added Vless proxy: {repr(vless_obj)}")
                     
                     result.append(vless_obj)
+            elif proxy.startswith("anytls://") and self.is_support_anytls:
+                split_by_hash = proxy[len("anytls://"):].split('#')
+                ps = urllib.parse.unquote(split_by_hash[-1])
+                if len(split_by_hash) < 2 or filter_regex.fullmatch(ps) and not exclude_regex.fullmatch(ps):
+                    anytls_body = '#'.join(split_by_hash[:-1])
+                    anytls_ps = "AnyTlsServer" if len(split_by_hash) < 2 else ps.strip()
+                    if not ('@' in anytls_body):
+                        anytls_body = self.compat_base64_decode(anytls_body)
+                    split_by_at = anytls_body.split("@")
+                    anytls_user = split_by_at[0]
+
+                    anytls_add, anytls_port = split_by_at[1].split(":")
+
+                    anytls_port = ''.join(itertools.takewhile(str.isdigit, anytls_port))
+
+                    anytls_body_query_parts = anytls_body.split("?")
+                    anytls_body_query = None
+
+                    if len(anytls_body_query_parts) >= 2:
+                        anytls_body_query_str = '?'.join(anytls_body_query_parts[1:])
+                        anytls_body_query = dict(urllib.parse.parse_qsl(anytls_body_query_str))
+
+                    anytls_obj = {
+                        "is_anytls": True,
+                        "add": anytls_add,
+                        "port": anytls_port,
+                        "password": anytls_user,
+                        "ps": ps_prefix + anytls_ps
+                    }
+
+                    if anytls_body_query:
+                        anytls_obj = {**anytls_obj, **anytls_body_query}
+
+                    if self.is_debug:
+                        anytls_obj.update({"origin": proxy})
+                        self.debug(f"Added AnyTls proxy: {repr(anytls_obj)}")
+                    
+                    result.append(anytls_obj)
 
             elif proxy.startswith("ssr://") and allow_ssr:
                 # ssr://base64(host:port:protocol:method:obfs:base64pass/?obfsparam=base64param&protoparam=base64param&remarks=base64remarks&group=base64group&udpport=0&uot=0)
@@ -517,6 +573,8 @@ class SubscriptionResponder(object):
             subscribe_url = entry.get("subscribe_url")
             ps_prefix = entry.get("ps_prefix", "")
             if subscribe_url is not None:
+                now1 = datetime.datetime.now()
+                subscribe_url = subscribe_url.replace("___DATE___", now1.strftime("%Y-%m-%d")).replace("___TIME___", now1.strftime("%H-%M-%S")).replace("___HOUR___", now1.strftime("%H")).replace("___DAYPART___", str((now1.hour + 2) % 8))
                 tasks.append(self.get_proxies_from_sub_url_report_err(
                     subscribe_url,
                     ps_prefix,
@@ -628,6 +686,8 @@ class SubscriptionResponder(object):
                         clash_proxy["servername"] = vless_sni
                     if proxy.get("type", "") != "":
                         clash_proxy["network"] = proxy["type"]
+                    if proxy.get("tls", None) is not None:
+                        clash_proxy["tls"] = proxy.get("tls", None)
                     if proxy.get("security", "") == "reality":
                         clash_proxy["tls"] = True
                         clash_proxy["client-fingerprint"] = proxy.get("fp", "chrome")
@@ -637,6 +697,27 @@ class SubscriptionResponder(object):
                         clash_proxy["reality-opts"] = clash_proxy.get("reality-opts", {})
                         clash_proxy["reality-opts"]["public-key"] = proxy.get("pbk", "")
                         clash_proxy["reality-opts"]["short-id"] = proxy.get("sid", "")
+                elif proxy.get("is_anytls", False) == True and self.is_support_anytls:
+                    clash_proxy["name"] = proxy["ps"]
+                    clash_proxy["type"] = "anytls"
+                    clash_proxy["server"] = proxy["add"]
+                    clash_proxy["port"] = int(proxy["port"])
+                    clash_proxy["password"] = proxy["password"]
+                    clash_proxy["client-fingerprint"] = proxy.get("fp", "chrome")
+                    clash_proxy["udp"] = True
+                    clash_proxy["idle-session-check-interval"] = 30
+                    clash_proxy["idle-session-timeout"] = 30
+                    clash_proxy["min-idle-session"] = 0
+                    anytls_sni = proxy.get("sni", proxy.get("servername", None))
+                    if anytls_sni:
+                        clash_proxy["sni"] = anytls_sni
+                    anytls_alpn = proxy.get("alpn", "")
+                    if anytls_alpn:
+                        clash_proxy["alpn"] = anytls_alpn.split(",")
+                    anytls_insecure_1 = str(proxy.get("insecure", "0")).lower()
+                    anytls_insecure_2 = str(proxy.get("allowInsecure", "0")).lower()
+                    if anytls_insecure_1 == "1" or anytls_insecure_1 == "yes" or anytls_insecure_1 == "true" or anytls_insecure_2 == "1" or anytls_insecure_2 == "yes" or anytls_insecure_2 == "true":
+                        clash_proxy["skip-cert-verify"] = True
                 elif proxy.get("is_trojan", False) == True:
                     clash_proxy["name"] = proxy["ps"]
                     clash_proxy["type"] = "trojan"
@@ -664,14 +745,15 @@ class SubscriptionResponder(object):
                     clash_proxy["cipher"] = "auto"
                     clash_proxy["udp"] = True
                     clash_proxy["tls"] = proxy.get("tls", "") == "tls"
+                    clash_proxy["servername"] = proxy.get("sni", None)
                     clash_proxy["skip-cert-verify"] = False
+                    clash_proxy["ws-path"] = proxy.get('path', "")
                     if proxy["net"] != "tcp":
                         clash_proxy["network"] = proxy['net']
                     elif proxy['type'] == "http":
                         clash_proxy["network"] = "http"
                         if "ws-path" in clash_proxy:
                             clash_proxy["network"] = "ws"
-                    clash_proxy["ws-path"] = proxy.get('path', "")
                     clash_proxy["ws-headers"] = {"Host": proxy.get('host', "")}
 
                 if clash_proxy["name"] in name_dedup_set:
@@ -817,6 +899,40 @@ class SubscriptionResponder(object):
         self.debug(f"ssr all_uris: {all_uris}")
         return self.base64_encode(all_uris.strip() + "\n").strip()
 
+    async def kto_redact(self, orig_str, metasub_key):
+        def kto_redact_replace_func(match):
+            param = match.group(1)
+            wrapped = match.group(2)
+
+            param_split = param.split(",")
+            verdict = None
+            redact_with_value = "REDACTED"
+            for subparam in param_split:
+                subparam = subparam
+                subparam_split = subparam.split("=")
+                if len(subparam_split) >= 2:
+                    k = subparam_split[0]
+                    v = ('='.join(subparam_split[1:]))
+                    if k == "exclude" or k == "deny":
+                        if verdict is None and (metasub_key == v or v == "*"):
+                            verdict = False
+                    elif k == "include" or k == "allow":
+                        if verdict is None and (metasub_key == v or v == "*"):
+                            verdict = True
+                    elif k == "redact":
+                        redact_with_value = v
+                        
+            if verdict is None or verdict == False:
+                redact_with_value = redact_with_value.replace('___KtoRightSquareBracket___', ']')
+                return redact_with_value
+            else:
+                wrapped = wrapped.replace('___KtoRightParentheses___', ')')
+                wrapped = wrapped.replace('___KtoRightParenthesis___', ')')
+                return wrapped
+
+        result = re.sub(r'KtoRedact\[([^]]*)\]\(([^)]*)\)', kto_redact_replace_func, orig_str)
+        return result
+
     async def worker(self):
         try:
             try:
@@ -832,13 +948,17 @@ class SubscriptionResponder(object):
             
 
             if self.out_type == "json":
-                self.body_writer.write(json.dumps(raw_proxies, indent=2, ensure_ascii=False))
+                result_orig = (json.dumps(raw_proxies, indent=2, ensure_ascii=False))
             elif self.out_type == "clash":
-                self.body_writer.write(self.get_clash_result(raw_proxies))
+                result_orig = (self.get_clash_result(raw_proxies))
             elif self.out_type == "ssr":
-                self.body_writer.write(self.get_ssr_result(raw_proxies))
+                result_orig = (self.get_ssr_result(raw_proxies))
             else:
-                self.body_writer.write(self.get_ss_v2ss_result(raw_proxies))
+                result_orig = (self.get_ss_v2ss_result(raw_proxies))
+
+            result_redacted = await self.kto_redact(result_orig, self.metasub_key)
+
+            self.body_writer.write(result_redacted)
 
             self.debug("Saving state")
             try:
