@@ -1,3 +1,4 @@
 aiohttp_socks
 pyyaml
 aiohttp
+dnspython[doh]

@@ -16,6 +16,11 @@ import traceback
 import pathlib
 from quart import request
 from typing import List, Dict
+import ipaddress
+
+import dns.message
+import dns.query
+import dns.rdatatype
 
 from . import config
 
@@ -224,6 +229,7 @@ class SubscriptionResponder(object):
 
     async def get_proxies_from_sub_url(self, url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr):
         result = []
+        raw_sub = ""
         cache_ok = False
         if self.is_use_cache:
             self.debug(f"Getting sub from", url, " (from state cache)")
@@ -246,7 +252,8 @@ class SubscriptionResponder(object):
                 real_url_wo_refresher = '#'.join(real_url_wo_refresher_split[0:-1])
             else:
                 real_url_wo_refresher = real_url_wo_refresher_split[0]
-            async with aiohttp.ClientSession(connector=config.create_connector_for_sub(real_url_wo_refresher), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC), headers={'User-Agent': 'v2ray'}) as session:
+            # async with aiohttp.ClientSession(connector=config.create_connector_for_sub(real_url_wo_refresher), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC), headers={'User-Agent': 'v2ray'}) as session:
+            async with aiohttp.ClientSession(connector=config.create_connector_for_sub(real_url_wo_refresher), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC), headers={'User-Agent': 'mihomo/Mihomo/Clash.Meta/MetaCubeX'}) as session:
                 self.debug(f"Getting sub from", real_url_wo_refresher)
                 resp = await session.get(real_url_wo_refresher)
                 raw_sub = await resp.text()
@@ -291,6 +298,9 @@ class SubscriptionResponder(object):
                 proxies.append(ss_obj)
         elif raw_sub == "" or raw_sub == b"":
             proxies = []
+        elif raw_sub.startswith("proxies:") or "\nproxies:" in raw_sub:
+            cache_key_uniq_prefix = url + '_'
+            proxies = await self.process_full_clash_conf_to_proxies(raw_sub, cache_key_uniq_prefix)
         else:
             proxies = self.base64_decode(raw_sub).split("\n")
 
@@ -299,8 +309,11 @@ class SubscriptionResponder(object):
 
         for proxy in proxies:
             if isinstance(proxy, dict):
-                if filter_regex.fullmatch(proxy['ps']) and not exclude_regex.fullmatch(proxy['ps']):
-                    proxy['ps'] = ps_prefix + proxy['ps']
+                proxy_ps_key = 'ps'
+                if proxy.get('is_clash_format', False):
+                    proxy_ps_key = 'name'
+                if filter_regex.fullmatch(proxy[proxy_ps_key]) and not exclude_regex.fullmatch(proxy[proxy_ps_key]):
+                    proxy[proxy_ps_key] = ps_prefix + proxy[proxy_ps_key]
                     result.append(proxy)
             elif proxy.startswith("vmess://"):
                 proxy = proxy[len("vmess://"):]
@@ -311,7 +324,7 @@ class SubscriptionResponder(object):
             elif proxy.startswith("ss://") and allow_ss:
                 # ss://cmM0LW1kNTpwYXNzd2Q=@192.168.100.1:8888/?plugin=obfs-local%3Bobfs%3Dhttp#Example2
                 split_by_hash = proxy[len("ss://"):].split('#')
-                ps = urllib.parse.unquote(split_by_hash[-1])
+                ps = urllib.parse.unquote_plus(split_by_hash[-1])
                 if len(split_by_hash) < 2 or filter_regex.fullmatch(ps) and not exclude_regex.fullmatch(ps):
                     ss_body = '#'.join(split_by_hash[:-1])
                     ss_ps = "SSServer" if len(split_by_hash) < 2 else ps.strip()
@@ -382,7 +395,7 @@ class SubscriptionResponder(object):
             elif proxy.startswith("trojan://"):
                 # trojan://uuid@host:port?sni=sni#ps
                 split_by_hash = proxy[len("trojan://"):].split('#')
-                ps = urllib.parse.unquote(split_by_hash[-1])
+                ps = urllib.parse.unquote_plus(split_by_hash[-1])
                 if len(split_by_hash) < 2 or filter_regex.fullmatch(ps) and not exclude_regex.fullmatch(ps):
                     trojan_body = '#'.join(split_by_hash[:-1])
                     trojan_ps = "TrojanServer" if len(split_by_hash) < 2 else ps.strip()
@@ -427,7 +440,7 @@ class SubscriptionResponder(object):
                     result.append(trojan_obj)
             elif proxy.startswith("vless://"):
                 split_by_hash = proxy[len("vless://"):].split('#')
-                ps = urllib.parse.unquote(split_by_hash[-1])
+                ps = urllib.parse.unquote_plus(split_by_hash[-1])
                 if len(split_by_hash) < 2 or filter_regex.fullmatch(ps) and not exclude_regex.fullmatch(ps):
                     vless_body = '#'.join(split_by_hash[:-1])
                     vless_ps = "VlessServer" if len(split_by_hash) < 2 else ps.strip()
@@ -466,7 +479,7 @@ class SubscriptionResponder(object):
                     result.append(vless_obj)
             elif proxy.startswith("anytls://") and self.is_support_anytls:
                 split_by_hash = proxy[len("anytls://"):].split('#')
-                ps = urllib.parse.unquote(split_by_hash[-1])
+                ps = urllib.parse.unquote_plus(split_by_hash[-1])
                 if len(split_by_hash) < 2 or filter_regex.fullmatch(ps) and not exclude_regex.fullmatch(ps):
                     anytls_body = '#'.join(split_by_hash[:-1])
                     anytls_ps = "AnyTlsServer" if len(split_by_hash) < 2 else ps.strip()
@@ -563,6 +576,106 @@ class SubscriptionResponder(object):
     async def get_proxies_as_is(self, entry):
         return [entry]
 
+    async def resolve_by_doh(self, doh_url, server_host):
+        # https://github.com/rthalley/dnspython/blob/main/examples/doh.py
+        # https://gitlab.com/libreops/doh-cli/-/blob/main/doh_cli/resolve.py?ref_type=heads
+        qname = server_host
+        if server_host.endswith('.'):
+            pass
+        else:
+            qname = qname + '.'
+
+        async with aiohttp.ClientSession(connector=config.create_connector_for_sub(doh_url), timeout=aiohttp.ClientTimeout(total=5), headers={'User-Agent': 'mihomo/Mihomo/Clash.Meta/MetaCubeX', "Content-Type": "application/dns-message", "Accept": "application/dns-message"}) as session:
+        # async with httpx.AsyncClient(timeout=5.0) as client:
+            self.debug(f"Resolving with DoH:", doh_url, "Qname:", qname)
+            q = dns.message.make_query(qname, dns.rdatatype.A)
+            dns_req = base64.urlsafe_b64encode(q.to_wire()).decode("UTF8").rstrip("=")
+
+            resp = await session.get(doh_url, params={"dns": dns_req},
+                        headers={"Content-type": "application/dns-message"})
+            resp.raise_for_status()
+
+            if "application/dns-message" not in resp.headers["Content-Type"]:
+                raise ValueError(f"\"application/dns-message\" not in resp.headers Content-Type")
+
+            resp_bytes = await resp.content.read()
+
+            self.debug(f"Resolving with DoH: resp_bytes: ", repr(resp_bytes))
+            answers = dns.message.from_wire(resp_bytes).answer
+            
+            if len(answers) == 0:
+                raise ValueError(f"doh: answers len 0")
+
+            results = []
+            for rrset in answers:
+                for rrdata in rrset:
+                    if rrdata.rdclass == dns.rdataclass.IN:
+                        if rrdata.rdtype == dns.rdatatype.A:
+                            result = rrdata.to_text()
+                            if len(result) > 0:
+                                results.append(result)
+            self.debug(f"Resolved with DoH:", doh_url, "Qname:", qname, " -> ", ','.join(results))
+
+            if len(results) == 0:
+                raise ValueError(f"doh: results len 0")
+
+            return results[0]
+
+    async def resolve_by_doh_maybe_cached(self, doh_url, server_host, cache_key_uniq_prefix):
+        cache_ok = False
+        result = ""
+        if self.is_use_cache:
+            self.debug(f"Resolving with DoH:", doh_url, "Server Node Host:", server_host, " (from state cache)")
+            resolved_cached = self.state.get('CACHED_PRIV_RESOLVED_SERVER_' + cache_key_uniq_prefix + doh_url + "_" + server_host, "")
+            if resolved_cached:
+                cache_ok = True
+                result = resolved_cached
+        if not cache_ok and not self.is_full_use_cache:
+            result = await self.resolve_by_doh(doh_url, server_host)
+            if result:
+                self.state['CACHED_PRIV_RESOLVED_SERVER_' + cache_key_uniq_prefix + doh_url + "_" + server_host] = result
+                self.state['CACHED_PRIV_RESOLVED_SERVER_TIME_' + cache_key_uniq_prefix + doh_url + "_" + server_host] = str(datetime.datetime.now())
+            else:
+                self.debug(f"Resolving with DoH:", doh_url, "Server Node Host:", server_host, " returns blank value:", repr(result))
+                result = ""
+        return result
+
+
+    async def process_full_clash_conf_to_proxies(self, raw_clash_conf_str, cache_key_uniq_prefix):
+        clash_config = yaml.safe_load(raw_clash_conf_str)
+        clash_config_nameservers = clash_config.get('dns', {}).get('nameserver', [])
+        clash_config_nameservers = list(filter(lambda x: not('119.29.29.29' in x) and not('119.28.28.28' in x) and not('223.5.5.5' in x) and not('223.6.6.6' in x)  and not('114.114.114.114' in x) and not('8.8.8.8' in x) and not('4.4.4.4' in x) and not('1.1.1.1' in x) and not('doh.pub/dns-query' in x) and not('dns.alidns.com/dns-query' in x) and x.startswith("https://"), clash_config_nameservers))
+        # alixxxxxxdns: seemingly ok to resolve server node host using attached dns server list
+
+        has_custom_nameserver = False
+        if len(clash_config_nameservers) == 0:
+            has_custom_nameserver = False
+            # raise ValueError(f"doh: clash_config_nameservers len 0")
+        else:
+            has_custom_nameserver = True
+            self.debug(f"This provider has clash/mihomo custom nameserver: ", ','.join(clash_config_nameservers))
+
+
+        clash_config_proxies = clash_config.get('proxies', [])
+        for p in clash_config_proxies:
+            if has_custom_nameserver:
+                is_ip = False
+                try:
+                    ipaddress.ip_address(p['server'])
+                    is_ip = True
+                except ValueError:
+                    is_ip = False
+                if not is_ip:
+                    resolved = await self.resolve_by_doh_maybe_cached(clash_config_nameservers[0], p['server'], cache_key_uniq_prefix)
+                    if resolved:
+                        p['server'] = resolved
+                
+            p['is_clash_format'] = True
+
+        return clash_config_proxies
+
+        
+
     async def fetch_raw_proxies(self) -> List[Dict]:
         tasks: List[asyncio.Future] = []
         allow_ss: bool = self.out_type in ["v2ss", "clash", "json", "ssr", "v2sip"]
@@ -634,7 +747,10 @@ class SubscriptionResponder(object):
         for proxy in raw_proxies:
             clash_proxy = {}
             if isinstance(proxy, dict):
-                if proxy.get("is_ss", False) == True:
+                if proxy.get("is_clash_format", False) == True:
+                    clash_proxy.update(proxy)
+                    clash_proxy.pop('is_clash_format', None)
+                elif proxy.get("is_ss", False) == True:
                     clash_proxy["name"] = proxy["ps"]
                     clash_proxy["type"] = "ss"
                     clash_proxy["server"] = proxy["add"]
@@ -946,6 +1062,8 @@ class SubscriptionResponder(object):
             await self.get_metasub()
             raw_proxies = await self.fetch_raw_proxies()
             
+            if self.out_type != "clash":
+                raw_proxies = list(filter(lambda x: x.get('is_clash_format', False) == False, raw_proxies))
 
             if self.out_type == "json":
                 result_orig = (json.dumps(raw_proxies, indent=2, ensure_ascii=False))
