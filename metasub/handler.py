@@ -220,14 +220,14 @@ class SubscriptionResponder(object):
         self.clash_base = metasub.get("clash-base", self.clash_base)
         self.entries = metasub.get("entries")
 
-    async def get_proxies_from_sub_url_report_err(self, url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr):
+    async def get_proxies_from_sub_url_report_err(self, url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr, node_host_replace_map):
         try:
-            return await self.get_proxies_from_sub_url(url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr)
+            return await self.get_proxies_from_sub_url(url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr, node_host_replace_map)
         except Exception as e:
             self.debug(f"Error getting sub from", url, " (ps_prefix=", ps_prefix, ") in get_proxies_from_sub_url")
             raise e
 
-    async def get_proxies_from_sub_url(self, url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr):
+    async def get_proxies_from_sub_url(self, url, ps_prefix, filter, exclude_filter, allow_ss, allow_ssr, node_host_replace_map):
         result = []
         raw_sub = ""
         cache_ok = False
@@ -253,7 +253,7 @@ class SubscriptionResponder(object):
             else:
                 real_url_wo_refresher = real_url_wo_refresher_split[0]
             # async with aiohttp.ClientSession(connector=config.create_connector_for_sub(real_url_wo_refresher), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC), headers={'User-Agent': 'v2ray'}) as session:
-            async with aiohttp.ClientSession(connector=config.create_connector_for_sub(real_url_wo_refresher), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC), headers={'User-Agent': 'mihomo/Mihomo/Clash.Meta/MetaCubeX'}) as session:
+            async with aiohttp.ClientSession(connector=config.create_connector_for_sub(real_url_wo_refresher), timeout=aiohttp.ClientTimeout(total=config.SUB_TIMEOUT_TOTAL_SEC), headers={'User-Agent': 'mihomo/Mihomo/Clash.Meta/MetaCubeX', 'Accept': '*/*'}) as session:
                 self.debug(f"Getting sub from", real_url_wo_refresher)
                 resp = await session.get(real_url_wo_refresher)
                 raw_sub = await resp.text()
@@ -300,7 +300,7 @@ class SubscriptionResponder(object):
             proxies = []
         elif raw_sub.startswith("proxies:") or "\nproxies:" in raw_sub:
             cache_key_uniq_prefix = url + '_'
-            proxies = await self.process_full_clash_conf_to_proxies(raw_sub, cache_key_uniq_prefix)
+            proxies = await self.process_full_clash_conf_to_proxies(raw_sub, cache_key_uniq_prefix, node_host_replace_map)
         else:
             proxies = self.base64_decode(raw_sub).split("\n")
 
@@ -630,18 +630,21 @@ class SubscriptionResponder(object):
             if resolved_cached:
                 cache_ok = True
                 result = resolved_cached
+                self.debug(f"Resolved with DoH from cache:", doh_url, "Server Node Host:", server_host, " result:", repr(result))
+            else:
+                self.debug(f"No result resolving with DoH from cache:", doh_url, "Server Node Host:", server_host, " returns blank value:", repr(resolved_cached))
         if not cache_ok and not self.is_full_use_cache:
             result = await self.resolve_by_doh(doh_url, server_host)
             if result:
                 self.state['CACHED_PRIV_RESOLVED_SERVER_' + cache_key_uniq_prefix + doh_url + "_" + server_host] = result
                 self.state['CACHED_PRIV_RESOLVED_SERVER_TIME_' + cache_key_uniq_prefix + doh_url + "_" + server_host] = str(datetime.datetime.now())
             else:
-                self.debug(f"Resolving with DoH:", doh_url, "Server Node Host:", server_host, " returns blank value:", repr(result))
+                self.debug(f"No result resolving with DoH:", doh_url, "Server Node Host:", server_host, " returns blank value:", repr(result))
                 result = ""
         return result
 
 
-    async def process_full_clash_conf_to_proxies(self, raw_clash_conf_str, cache_key_uniq_prefix):
+    async def process_full_clash_conf_to_proxies(self, raw_clash_conf_str, cache_key_uniq_prefix, node_host_replace_map):
         clash_config = yaml.safe_load(raw_clash_conf_str)
         clash_config_nameservers = clash_config.get('dns', {}).get('nameserver', [])
         clash_config_nameservers = list(filter(lambda x: not('119.29.29.29' in x) and not('119.28.28.28' in x) and not('223.5.5.5' in x) and not('223.6.6.6' in x)  and not('114.114.114.114' in x) and not('8.8.8.8' in x) and not('4.4.4.4' in x) and not('1.1.1.1' in x) and not('doh.pub/dns-query' in x) and not('dns.alidns.com/dns-query' in x) and x.startswith("https://"), clash_config_nameservers))
@@ -658,7 +661,11 @@ class SubscriptionResponder(object):
 
         clash_config_proxies = clash_config.get('proxies', [])
         for p in clash_config_proxies:
-            if has_custom_nameserver:
+            try_replace_host = node_host_replace_map.get(p['server'], '')
+            if try_replace_host:
+                self.debug(f"proxy {p.get('name', '(no name?)')} host is replaced by node_host_replace_map: {p['server']} -> {try_replace_host}")
+                p['server'] = try_replace_host
+            elif has_custom_nameserver:
                 is_ip = False
                 try:
                     ipaddress.ip_address(p['server'])
@@ -685,6 +692,7 @@ class SubscriptionResponder(object):
                 raise TypeError(f"{repr(entry)} is not a dict: {type(entry).__name__}")
             subscribe_url = entry.get("subscribe_url")
             ps_prefix = entry.get("ps_prefix", "")
+            node_host_replace_map = entry.get("node_host_replace_map", {})
             if subscribe_url is not None:
                 now1 = datetime.datetime.now()
                 subscribe_url = subscribe_url.replace("___DATE___", now1.strftime("%Y-%m-%d")).replace("___TIME___", now1.strftime("%H-%M-%S")).replace("___HOUR___", now1.strftime("%H")).replace("___DAYPART___", str((now1.hour + 2) % 8))
@@ -694,7 +702,8 @@ class SubscriptionResponder(object):
                     entry.get("filter", r'^.*$'),
                     entry.get("exclude_filter", r'^$'),
                     allow_ss,
-                    allow_ssr
+                    allow_ssr,
+                    node_host_replace_map
                 ))
             else:
                 tasks.append(self.get_proxies_as_is(entry))
@@ -882,8 +891,35 @@ class SubscriptionResponder(object):
                 for group in clash_result.get("proxy-groups", []):
                     if "name" not in group:
                         raise ValueError(f"\"name\" not in one of the proxy-groups")
+                    
+                    group_proxies = group.get('proxies', [])
+                    group['proxies'] = group_proxies
+
                     if group["name"].startswith("Node Sel-") or group["name"].startswith("NodeSel-") or group["name"].startswith("Sel-"):
-                        group["proxies"].append(clash_proxy["name"])
+                        group_proxies.append(clash_proxy["name"])
+
+        known_clash_groups_and_proxies = set(['DIRECT', 'REJECT', 'DROP'])
+        for group in clash_result.get("proxy-groups", []):
+            if "name" not in group:
+                raise ValueError(f"\"name\" not in one of the proxy-groups")
+            known_clash_groups_and_proxies.add(group['name'])
+
+        for clash_proxy in clash_result.get("proxies", []):
+            if "name" not in clash_proxy:
+                raise ValueError(f"\"name\" not in one of the clash_proxy")
+            known_clash_groups_and_proxies.add(clash_proxy['name'])
+
+        for group in clash_result.get("proxy-groups", []):
+            group_proxies = group.get('proxies', [])
+            filtered_group_proxies = []
+            for gp in group_proxies:
+                if gp not in known_clash_groups_and_proxies:
+                    self.debug(f"this group_proxy not in known_clash_groups_and_proxies: {gp}, removing")
+                else:
+                    filtered_group_proxies.append(gp)
+                
+            group['proxies'] = filtered_group_proxies
+        
                 
         if self.is_clashray:
             zones = clash_result.get("clashray-net-zones", {})
